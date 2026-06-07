@@ -31,7 +31,7 @@
 │            │                 ┌────────▼────────┐                │
 │            │                 │                 │                │
 │            │                 │  qwen2.5-coder  │                │
-│            │                 │    (1.5b model) │                │
+│            │                 │    (7b model)   │                │
 │            │                 │                 │                │
 │            │                 └─────────────────┘                │
 │                                                                 │
@@ -52,8 +52,12 @@ Emits a 'message' event over the WebSocket
         │
         ▼
 server.js receives the message
+Runs it through guardrails (length, profanity, rate limit, etc.)
+If blocked → emits 'guardrail' event back with the reason
+        │
+        ▼ (if allowed)
 Opens a streaming HTTP request to Ollama at localhost:11434
-Sends the prompt with stream: true
+Sends the sanitized prompt with stream: true
         │
         ▼
 Ollama loads the model (if not already in memory)
@@ -73,6 +77,9 @@ User sees text appearing word by word in real time
 Ollama sends a final chunk: { done: true }
 server.js emits a 'done' event
 React removes the blinking cursor, re-enables the input
+
+At any point the user can hit Stop →
+React emits 'stop' → server destroys the Ollama request → emits 'done'
 ```
 
 ---
@@ -85,15 +92,17 @@ Think of it like ordering food through a walkie-talkie system.
 
 **The walkie-talkie** is the WebSocket. Unlike a normal web request where you ask and wait for a complete answer, a WebSocket keeps a live, open connection between your browser and the server the whole time — like leaving a phone call on.
 
-**The middleman** is `server.js` running locally on port 3001. It receives your message and forwards it to Ollama.
+**The middleman** is `server.js` running locally on port 3001. It validates your message through guardrails, then forwards it to Ollama.
 
 **Ollama** is a separate program also running on your machine. It holds the AI model and does the actual thinking. Crucially, it doesn't wait until it has the full answer — it sends back one word (token) at a time as it generates them.
 
 **The token relay:** As each word arrives at the server from Ollama, the server immediately bounces it back to your browser. React appends each word to the last chat bubble. That's why you see the text appear gradually — it's each word arriving live, not a loading spinner followed by a wall of text.
 
+**The Stop button** destroys the active HTTP connection to Ollama mid-stream. Whatever text has already arrived stays in the chat.
+
 **The blinking cursor** is a CSS trick. It appears automatically on any message marked as `streaming` and disappears the moment the server signals `done`.
 
-In short: **you type → browser sends over WebSocket → server forwards to Ollama → Ollama streams words back → server relays each word → browser draws it live.** Everything is local, nothing leaves your machine.
+In short: **you type → browser sends over WebSocket → server validates and forwards to Ollama → Ollama streams words back → server relays each word → browser draws it live.** Everything is local, nothing leaves your machine.
 
 ---
 
@@ -108,38 +117,28 @@ In short: **you type → browser sends over WebSocket → server forwards to Oll
 | `src/App.jsx` | The entire app — state, WebSocket logic, and UI in one component |
 | `src/App.css` | Dark-themed chat styling |
 
-### State (the app's memory)
-
-The component tracks three pieces of state:
+### State
 
 | State | What it holds |
 |---|---|
 | `messages` | Array of `{ role, text, streaming }` objects — the full chat history |
 | `input` | Whatever the user is currently typing |
-| `isStreaming` | True while Ollama is generating — disables the input and button |
+| `isStreaming` | True while Ollama is generating — swaps Send for Stop button |
+| `connectionStatus` | `connecting` / `connected` / `disconnected` |
+| `guardrailError` | Reason string if the last message was blocked, otherwise null |
+| `remaining` | Requests left in the current rate limit window |
 
-### The WebSocket Connection
+### WebSocket Events
 
-```js
-const socket = io('http://localhost:3001')
-```
-
-This line lives *outside* the component so the connection is created once and persists across re-renders. Three events are listened for:
-
-- **`token`** — appends the incoming word to the last message in state
-- **`done`** — marks streaming as finished, removes the blinking cursor
-- **`error`** — adds an error bubble, re-enables the input
-
-### Sending a Message
-
-When the user hits Send (or presses Enter), `sendMessage` does four things atomically:
-
-1. Adds the user's message to the chat history
-2. Adds an empty assistant message with `streaming: true` (the placeholder)
-3. Clears the input field and sets `isStreaming = true`
-4. Emits the message over the WebSocket to the server
-
-Tokens from Ollama then fill in that empty placeholder one by one.
+| Event | Direction | Meaning |
+|---|---|---|
+| `message` | → server | User sent a message |
+| `stop` | → server | User aborted the stream |
+| `token` | ← server | One word from Ollama — append to last bubble |
+| `done` | ← server | Response complete or stream stopped |
+| `guardrail` | ← server | Message was blocked — includes reason |
+| `rateInfo` | ← server | Remaining request count after a successful send |
+| `error` | ← server | Ollama connection failed |
 
 ### The Blinking Cursor
 
@@ -156,4 +155,4 @@ Any assistant message with the `streaming` class gets the cursor appended automa
 
 ### Auto-Scroll
 
-A hidden `<div>` anchored to the bottom of the message list. Any time `messages` changes, `scrollIntoView` fires to keep the latest content visible — so the chat always follows the output as it streams in.
+A hidden `<div>` anchored to the bottom of the message list. Any time `messages` changes, `scrollIntoView` fires to keep the latest content visible.
