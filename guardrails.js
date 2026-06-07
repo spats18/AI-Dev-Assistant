@@ -1,54 +1,141 @@
-// Guardrails — input validation before a message reaches Ollama
-// Each function receives the message and a per-socket state object,
-// and returns { allowed: bool, reason: string }
+const BadWords = require('bad-words');
+const filter = new BadWords();
 
-// Tracks per-socket state; keyed by socket.id
+const DUPLICATE_THRESHOLD = 3;   // block after this many consecutive identical messages
+const MAX_LENGTH = 2000;
+const MIN_LENGTH = 2;
+const RATE_LIMIT_MAX = 20;
+const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+
+// Per-socket state, keyed by socket.id
 const socketState = new Map();
 
 function getState(socketId) {
     if (!socketState.has(socketId)) {
         socketState.set(socketId, {
             lastMessage: null,
+            duplicateCount: 0,
             requestCount: 0,
+            windowStart: Date.now(),
+            inProgress: false,
         });
     }
     return socketState.get(socketId);
 }
 
-// Call this when a socket disconnects to free memory
 function clearState(socketId) {
     socketState.delete(socketId);
 }
 
-// --- Guardrail 1: Duplicate requests ---
-// Prevents the user from sending the exact same message twice in a row
-function checkDuplicate(message, state) {
-    // TODO: decide if this should be consecutive-only or any repeat in session
-    // TODO: decide if comparison should be case-sensitive
+function setInProgress(socketId, value) {
+    const state = getState(socketId);
+    state.inProgress = value;
 }
 
-// --- Guardrail 2: Rate limiting ---
-// Caps the number of requests a socket can make per session
-// NOTE: "per day" requires persistent storage (file or DB) — not implemented yet
-// For now, this is per session (resets when server restarts or socket reconnects)
-function checkRateLimit(state) {
-    // TODO: decide on the request cap (e.g. 20 per session)
-    // TODO: decide whether to expose the remaining count to the frontend
+// Strip HTML/script tags before the message reaches Ollama
+function sanitize(message) {
+    return message.replace(/<[^>]*>/g, '').trim();
 }
 
-// --- Guardrail 3: Profanity filter ---
-// Rejects messages containing blocked words before they reach Ollama
+function checkEmpty(message) {
+    if (!message || !message.trim()) {
+        return { allowed: false, reason: 'Message cannot be empty.' };
+    }
+    return { allowed: true };
+}
+
+function checkMinLength(message) {
+    if (message.trim().length < MIN_LENGTH) {
+        return { allowed: false, reason: `Message must be at least ${MIN_LENGTH} characters.` };
+    }
+    return { allowed: true };
+}
+
+function checkMaxLength(message) {
+    if (message.length > MAX_LENGTH) {
+        return { allowed: false, reason: `Message exceeds ${MAX_LENGTH} character limit.` };
+    }
+    return { allowed: true };
+}
+
+function checkInProgress(state) {
+    if (state.inProgress) {
+        return { allowed: false, reason: 'Please wait for the current response to finish.' };
+    }
+    return { allowed: true };
+}
+
 function checkProfanity(message) {
-    // TODO: decide between a hardcoded word list vs. an npm package (e.g. 'bad-words')
-    // TODO: decide on response — hard block or a warning first?
+    if (filter.isProfane(message)) {
+        return { allowed: false, reason: 'Message contains blocked language.' };
+    }
+    return { allowed: true };
 }
 
-// --- Master check ---
-// Run all guardrails in order; return the first failure or allow
+// Returns allowed + newDuplicateCount so state is only committed after all checks pass
+function checkDuplicate(message, state) {
+    if (message === state.lastMessage) {
+        const newCount = state.duplicateCount + 1;
+        if (newCount >= DUPLICATE_THRESHOLD) {
+            return { allowed: false, reason: `You've sent this message ${DUPLICATE_THRESHOLD} times. Try rephrasing.`, newDuplicateCount: newCount };
+        }
+        return { allowed: true, newDuplicateCount: newCount };
+    }
+    return { allowed: true, newDuplicateCount: 1 };
+}
+
+// Returns allowed + remaining so state is only committed after all checks pass
+function checkRateLimit(state) {
+    const now = Date.now();
+    if (now - state.windowStart > RATE_LIMIT_WINDOW_MS) {
+        state.requestCount = 0;
+        state.windowStart = now;
+    }
+    const remaining = RATE_LIMIT_MAX - state.requestCount;
+    if (remaining <= 0) {
+        const resetInMin = Math.ceil((RATE_LIMIT_WINDOW_MS - (now - state.windowStart)) / 60000);
+        return { allowed: false, reason: `Rate limit reached. Try again in ${resetInMin} minute(s).`, remaining: 0 };
+    }
+    return { allowed: true, remaining: remaining - 1 };
+}
+
+// Runs all checks in order. On pass, commits state and returns sanitized message + remaining count.
 function runGuardrails(message, socketId) {
     const state = getState(socketId);
 
-    // TODO: wire up the three checks above and update state on pass
+    let result;
+
+    result = checkEmpty(message);
+    if (!result.allowed) return result;
+
+    result = checkMinLength(message);
+    if (!result.allowed) return result;
+
+    result = checkMaxLength(message);
+    if (!result.allowed) return result;
+
+    result = checkInProgress(state);
+    if (!result.allowed) return result;
+
+    result = checkProfanity(message);
+    if (!result.allowed) return result;
+
+    const dupResult = checkDuplicate(message, state);
+    if (!dupResult.allowed) return dupResult;
+
+    const rateResult = checkRateLimit(state);
+    if (!rateResult.allowed) return rateResult;
+
+    // All checks passed — commit state
+    state.lastMessage = message;
+    state.duplicateCount = dupResult.newDuplicateCount;
+    state.requestCount++;
+
+    return {
+        allowed: true,
+        sanitizedMessage: sanitize(message),
+        remaining: rateResult.remaining,
+    };
 }
 
-module.exports = { runGuardrails, clearState };
+module.exports = { runGuardrails, clearState, setInProgress };

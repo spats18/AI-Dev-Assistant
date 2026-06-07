@@ -12,6 +12,8 @@ function App() {
   const [input, setInput] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
   const [connectionStatus, setConnectionStatus] = useState('connecting') // 'connecting' | 'connected' | 'disconnected'
+  const [guardrailError, setGuardrailError] = useState(null)
+  const [remaining, setRemaining] = useState(null)
   const messagesEndRef = useRef(null)
 
   useEffect(() => {
@@ -54,6 +56,23 @@ function App() {
       setMessages((prev) => [...prev, { role: 'assistant', text: `Error: ${err}`, streaming: false }])
     })
 
+    socket.on('guardrail', ({ reason }) => {
+      setIsStreaming(false)
+      setGuardrailError(reason)
+      // Remove the empty pending assistant bubble added optimistically on send
+      setMessages((prev) => {
+        const last = prev[prev.length - 1]
+        if (last?.role === 'assistant' && last.text === '') {
+          return prev.slice(0, -1)
+        }
+        return prev
+      })
+    })
+
+    socket.on('rateInfo', ({ remaining }) => {
+      setRemaining(remaining)
+    })
+
     return () => {
       socket.off('connect')
       socket.off('disconnect')
@@ -61,6 +80,8 @@ function App() {
       socket.off('token')
       socket.off('done')
       socket.off('error')
+      socket.off('guardrail')
+      socket.off('rateInfo')
     }
   }, [])
 
@@ -68,6 +89,7 @@ function App() {
     const text = input.trim()
     if (!text || isStreaming || connectionStatus !== 'connected') return
 
+    setGuardrailError(null)
     setMessages((prev) => [
       ...prev,
       { role: 'user', text },
@@ -80,6 +102,11 @@ function App() {
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) sendMessage()
+  }
+
+  const handleInputChange = (e) => {
+    setInput(e.target.value)
+    if (guardrailError) setGuardrailError(null)
   }
 
   const isDisabled = isStreaming || connectionStatus !== 'connected'
@@ -116,17 +143,27 @@ function App() {
       </div>
 
       <div className="chat-input-area">
-        <input
-          type="text"
-          placeholder={connectionStatus !== 'connected' ? 'Waiting for connection...' : 'Ask something...'}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={isDisabled}
-        />
-        <button onClick={sendMessage} disabled={isDisabled}>
-          {isStreaming ? 'Thinking...' : 'Send'}
-        </button>
+        {guardrailError && (
+          <div className="guardrail-error">{guardrailError}</div>
+        )}
+        <div className="input-row">
+          <input
+            type="text"
+            placeholder={connectionStatus !== 'connected' ? 'Waiting for connection...' : 'Ask something...'}
+            value={input}
+            onChange={handleInputChange}
+            onKeyDown={handleKeyDown}
+            disabled={isDisabled}
+          />
+          <button onClick={sendMessage} disabled={isDisabled}>
+            {isStreaming ? 'Thinking...' : 'Send'}
+          </button>
+        </div>
+        {remaining !== null && (
+          <div className="rate-info">
+            {remaining} request{remaining !== 1 ? 's' : ''} remaining this window
+          </div>
+        )}
       </div>
     </div>
   )

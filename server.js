@@ -3,6 +3,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const { runGuardrails, clearState, setInProgress } = require('./guardrails');
 
 const OLLAMA_MODEL = 'qwen2.5-coder:7b';
 
@@ -19,6 +20,16 @@ io.on('connection', (socket) => {
     socket.on('message', (userMessage) => {
         console.log('Received message:', userMessage);
 
+        const guardrail = runGuardrails(userMessage, socket.id);
+        if (!guardrail.allowed) {
+            console.log('Guardrail blocked:', guardrail.reason);
+            socket.emit('guardrail', { reason: guardrail.reason });
+            return;
+        }
+
+        // Emit remaining request count so the frontend can show it
+        socket.emit('rateInfo', { remaining: guardrail.remaining });
+
         // config for the HTTP request to Ollama
         const options = {
             hostname: '127.0.0.1',
@@ -27,6 +38,8 @@ io.on('connection', (socket) => {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' }
         };
+
+        setInProgress(socket.id, true);
 
         // open a streaming HTTP request to Ollama
         const req = http.request(options, (res) => {
@@ -49,6 +62,7 @@ io.on('connection', (socket) => {
                         }
                         if (parsed.done) {
                             process.stdout.write('\n'); // newline after response completes
+                            setInProgress(socket.id, false);
                             socket.emit('done'); // tell the frontend the full response is complete
                         }
                     } catch (e) {
@@ -59,19 +73,26 @@ io.on('connection', (socket) => {
 
             res.on('error', (err) => {
                 console.error('Ollama response error:', err.message);
+                setInProgress(socket.id, false);
                 socket.emit('error', 'Ollama response stream failed');
             });
         });
 
-        // send the prompt; stream:true tells Ollama to send tokens as generated rather than waiting for the full response
-        req.write(JSON.stringify({ model: OLLAMA_MODEL, prompt: userMessage, stream: true }));
+        // send the sanitized prompt; stream:true tells Ollama to send tokens as generated
+        req.write(JSON.stringify({ model: OLLAMA_MODEL, prompt: guardrail.sanitizedMessage, stream: true }));
         req.end(); // signals we're done writing the request body — Ollama starts processing
 
         // catches network-level errors e.g. Ollama not running
         req.on('error', (err) => {
             console.error('Ollama error:', err.message);
+            setInProgress(socket.id, false);
             socket.emit('error', 'Failed to reach Ollama');
         });
+    });
+
+    // free memory when the client disconnects
+    socket.on('disconnect', () => {
+        clearState(socket.id);
     });
 });
 
