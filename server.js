@@ -15,6 +15,18 @@ const io = new Server(server, { cors: { origin: '*' } }); // attaches socket.io 
 
 // fires every time a new client (React app) opens a WebSocket connection
 io.on('connection', (socket) => {
+    let ollamaRequest = null; // reference to the active Ollama HTTP request, used to abort on stop
+    let stopped = false;      // flag so the error handler knows if destruction was intentional
+
+    socket.on('stop', () => {
+        if (ollamaRequest) {
+            stopped = true;
+            ollamaRequest.destroy();
+            ollamaRequest = null;
+        }
+        setInProgress(socket.id, false);
+        socket.emit('done');
+    });
 
     // listens for a 'message' event sent by the frontend
     socket.on('message', (userMessage) => {
@@ -39,6 +51,7 @@ io.on('connection', (socket) => {
             headers: { 'Content-Type': 'application/json' }
         };
 
+        stopped = false;
         setInProgress(socket.id, true);
 
         // open a streaming HTTP request to Ollama
@@ -62,6 +75,7 @@ io.on('connection', (socket) => {
                         }
                         if (parsed.done) {
                             process.stdout.write('\n'); // newline after response completes
+                            ollamaRequest = null;
                             setInProgress(socket.id, false);
                             socket.emit('done'); // tell the frontend the full response is complete
                         }
@@ -72,11 +86,16 @@ io.on('connection', (socket) => {
             });
 
             res.on('error', (err) => {
-                console.error('Ollama response error:', err.message);
+                if (!stopped) {
+                    console.error('Ollama response error:', err.message);
+                    socket.emit('error', 'Ollama response stream failed');
+                }
+                ollamaRequest = null;
                 setInProgress(socket.id, false);
-                socket.emit('error', 'Ollama response stream failed');
             });
         });
+
+        ollamaRequest = req;
 
         // send the sanitized prompt; stream:true tells Ollama to send tokens as generated
         req.write(JSON.stringify({ model: OLLAMA_MODEL, prompt: guardrail.sanitizedMessage, stream: true }));
@@ -84,9 +103,12 @@ io.on('connection', (socket) => {
 
         // catches network-level errors e.g. Ollama not running
         req.on('error', (err) => {
-            console.error('Ollama error:', err.message);
+            if (!stopped) {
+                console.error('Ollama error:', err.message);
+                socket.emit('error', 'Failed to reach Ollama');
+            }
+            ollamaRequest = null;
             setInProgress(socket.id, false);
-            socket.emit('error', 'Failed to reach Ollama');
         });
     });
 

@@ -100,6 +100,16 @@ function App() {
     socket.emit('message', text)
   }
 
+  const stopMessage = () => {
+    socket.emit('stop')
+    setIsStreaming(false)
+    setMessages((prev) => {
+      const updated = [...prev]
+      updated[updated.length - 1] = { ...updated[updated.length - 1], streaming: false }
+      return updated
+    })
+  }
+
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) sendMessage()
   }
@@ -155,9 +165,11 @@ function App() {
             onKeyDown={handleKeyDown}
             disabled={isDisabled}
           />
-          <button onClick={sendMessage} disabled={isDisabled}>
-            {isStreaming ? 'Thinking...' : 'Send'}
-          </button>
+          {isStreaming ? (
+            <button className="stop-btn" onClick={stopMessage}>Stop</button>
+          ) : (
+            <button onClick={sendMessage} disabled={connectionStatus !== 'connected'}>Send</button>
+          )}
         </div>
         {remaining !== null && (
           <div className="rate-info">
