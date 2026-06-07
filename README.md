@@ -61,22 +61,22 @@ Frontend runs on `http://localhost:5173`
 - [x] Phase 1 — Backend: Ollama streaming over WebSocket
 - [x] Phase 1 — Frontend: React chat UI with real-time streaming
 - [x] Phase 1 — Frontend: Connection error handling (banner + status indicator)
-- [ ] Phase 2 — Backend: Input guardrails (duplicate detection, rate limiting, profanity filter)
+- [x] Phase 2 — Backend + Frontend: Input guardrails
 
-## Guardrails (Planned)
+## Guardrails
 
-Input validation layer that runs before any message reaches Ollama. See [`GUARDRAILS.md`](GUARDRAILS.md) for the full plan.
+Input validation layer that runs before any message reaches Ollama. See [`GUARDRAILS.md`](GUARDRAILS.md) for full details.
 
 | Guardrail | Status |
 |---|---|
-| Block duplicate messages (after 3 repeats in session) | Planned |
-| Rate limiting — 20 requests per 10 minutes, with count shown | Planned |
-| Profanity filter via `bad-words` | Planned |
-| Block new message while response is in progress | Planned |
-| Max message length (~2000 chars) | Planned |
-| Reject empty / whitespace-only messages | Planned |
-| Minimum message length | Planned |
-| Input sanitization (strip HTML/script tags) | Planned |
+| Reject empty / whitespace-only messages | Done |
+| Minimum message length (2 chars) | Done |
+| Maximum message length (2000 chars) | Done |
+| Block new message while response is in progress | Done |
+| Profanity filter via `bad-words` | Done |
+| Block duplicate messages (after 3 repeats in session) | Done |
+| Rate limiting — 20 requests per 10 minutes, count shown in UI | Done |
+| Input sanitization (strip HTML/script tags) | Done |
 
 ## Screenshots
 

@@ -1,53 +1,66 @@
-# Guardrails Plan
+# Guardrails
 
 Input validation layer that runs before any message reaches Ollama.
-Implementation lives in `guardrails.js`.
+Implemented in `guardrails.js`, wired into `server.js`.
 
 ---
 
-## Decided
+## Implemented
 
-### 1. Duplicate Request Block
-Block a message if the user has sent the exact same string 3 or more times in the same session.
-Counter resets when the message changes.
+### 1. Empty / Whitespace-Only Block
+Rejects blank or whitespace-only submissions before anything else runs.
 
-### 2. Rate Limiting
-Cap: **20 requests per 10 minutes** per socket session.
-Show the user how many requests they have remaining.
-> Note: "per day" requires a database. This is per-session until persistence is added.
+### 2. Minimum Message Length
+Blocks messages under 2 characters — low signal, wastes rate limit quota.
 
-### 3. Profanity Filter
-Use the `bad-words` npm package to reject messages containing blocked words.
-Decision: hard block (not a warning first).
-
----
-
-## Proposed (not yet decided)
+### 3. Maximum Message Length
+Hard cap at 2000 characters. Long prompts can hang or crash Ollama.
+Enforced on the backend; frontend should mirror this in a future pass.
 
 ### 4. Block While Response In Progress
-Prevent sending a new message while Ollama is still streaming a response.
-Overlapping messages cause interleaved tokens on the frontend.
-> Priority: high — this is a bug risk, not just a guardrail.
+Prevents sending a new message while Ollama is still streaming.
+Overlapping messages would cause interleaved tokens on the frontend.
 
-### 5. Max Message Length
-Cap at ~2000 characters. Long prompts can hang or crash Ollama.
-Enforce on both frontend (UX) and backend (safety).
+### 5. Profanity Filter
+Uses the `bad-words` npm package. Hard block — no warning first.
 
-### 6. Empty / Whitespace-Only Messages
-Reject blank or whitespace-only submissions.
-Currently nothing blocks this.
+### 6. Duplicate Request Block
+Blocks a message after the same string has been sent 3 times in the same session.
+Counter resets when the message changes.
 
-### 7. Minimum Message Length
-Block single-character or very short sends (e.g. "a", "?").
-Low signal, wastes rate limit quota.
+### 7. Rate Limiting
+Cap: **20 requests per 10 minutes** per socket session.
+Remaining count is sent to the frontend and displayed below the input after each message.
+> Note: "per day" requires a database. This is per-session until persistence is added.
 
 ### 8. Input Sanitization
-Strip HTML and script tags from messages before forwarding to Ollama.
-Not a risk now, but will be if responses are ever rendered as HTML.
+Strips HTML and script tags from messages before forwarding to Ollama.
+
+---
+
+## Guardrail Order (matters)
+
+Checks run in this order — cheapest and most obvious first:
+
+1. Empty check
+2. Min length
+3. Max length
+4. In-progress check
+5. Profanity filter
+6. Duplicate check
+7. Rate limit
+
+State is only committed after all checks pass — no partial state mutations on failure.
+
+---
+
+## Frontend Behaviour
+
+- **Blocked message:** inline red error shown above the input, dismisses on next keystroke. The empty assistant bubble is removed; the user message stays in chat.
+- **Rate info:** remaining request count shown below the input after every successful send.
 
 ---
 
 ## Open Questions
-- What should the UI look like when a guardrail blocks a message? Toast? Inline error?
-- Should the duplicate counter reset after a session ends or persist?
-- Do we want a warning before a hard block on profanity, or straight rejection?
+- Should max message length also be enforced on the frontend with a character counter?
+- Should the duplicate counter persist across reconnects (requires session ID)?
